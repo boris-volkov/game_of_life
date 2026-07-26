@@ -1,3 +1,9 @@
+# game_of_life
+
+**[▶ Run it](https://boris-volkov.github.io/game_of_life/)**
+
+![game_of_life](screenshot.png)
+
 This is an interface into John Conway's "Game of Life". This is probably the most famous of the cellular automatons - basicly games that can be played on a sheet of graph paper, marking certain squares as "on" and others as "off", and the game progressing in steps based on the current position of the board.
 
 This particular game progresses by the following rules:
@@ -40,4 +46,4 @@ In this current version, you can change the size of the grid through url paramet
 
 Load the page with this new URL, and the grid will now be 100 rows by 200 columns.
 
-Okay, that's all you need to know. Now have fun with it. As always, the code is below, and you should take a look under the hood to see how all this works. 
+Okay, that's all you need to know. Now have fun with it. As always, the code is below, and you should take a look under the hood to see how all this works.
