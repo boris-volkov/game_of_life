@@ -42,7 +42,7 @@ Oh, and one more important detail: I've altered the game a little here. The trou
 
 In this current version, you can change the size of the grid through url parameters, to do this you have to take your mouse and keyboard, and add to the URL of the page :    ?rows=100&cols=200     no spaces!. so the URL would look something like: 
 
-	https://boris-volkov.github.io/games/exe/gol/index.html?rows=100&cols=200
+	https://boris-volkov.github.io/game_of_life/?rows=100&cols=200
 
 Load the page with this new URL, and the grid will now be 100 rows by 200 columns.
 
