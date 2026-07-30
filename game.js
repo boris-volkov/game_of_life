@@ -36,7 +36,10 @@ const ROUND_CELL_MIN = 7;    // px; circles at or above this, pixels below
 const CELL_FILL      = 0.84; // cell diameter as a fraction of its square
 const AGE_MAX        = 255;  // a just-died cell starts fading from here
 const RANDOM_DENSITY = 0.28;
-const DEFAULTS       = { cell: 14, speed: 12, trail: 60, rule: "B3/S23" };
+
+// a 19x19 board is a go board's line count, and a nice size to land on
+// before you have touched anything
+const DEFAULTS = { cell: 14, speed: 12, trail: 60, rule: "B3/S23", rows: 19, cols: 19 };
 
 // valid data-palette values; "" is the default look defined on :root itself
 const PALETTES = ["", "go", "chalk", "paper", "amber"];
@@ -60,6 +63,7 @@ const el = {
 	cols:    document.querySelector("#cols"),
 	fit:     document.querySelector("#fit"),
 	wrap:    document.querySelector("#wrap"),
+	crossings: document.querySelector("#crossings"),
 	rule:    document.querySelector("#rule"),
 	pattern: document.querySelector("#pattern"),
 	palette: document.querySelector("#palette"),
@@ -125,11 +129,11 @@ let cell_size = DEFAULTS.cell;   // css px per cell
 let css_w = 0, css_h = 0;        // board size in css px
 let dpr = 1;                     // device pixels per css px
 
-let fit_window = true;           // derive rows/cols from the window?
+let fit_window = false;          // derive rows/cols from the window?
 let wrap_edges = true;           // torus, or hard walls?
 let zoom = DEFAULTS.cell;        // desired cell size when fitting
-let fixed_rows = 64;             // board size when *not* fitting
-let fixed_cols = 64;
+let fixed_rows = DEFAULTS.rows;  // board size when *not* fitting
+let fixed_cols = DEFAULTS.cols;
 let steps_per_second = DEFAULTS.speed;
 let trail_percent = DEFAULTS.trail;
 let trail_decay = DEFAULTS.trail / 100;
@@ -139,6 +143,7 @@ let rule_text = DEFAULTS.rule;
 let birth_mask = 0, survive_mask = 0;   // bit n set == "n neighbours does it"
 
 let palette = "";                // "" is the default look; see PALETTES
+let stones_on_lines = false;     // dots on grid crossings, like a go board
 
 let generation = 0;
 let population = 0;
@@ -355,6 +360,16 @@ function draw_cells() {
 	if (armed_pattern && hover) draw_stamp_preview();
 }
 
+/* Where a cell's dot gets drawn within its square: dead centre normally,
+   or the square's top-left corner when it should sit on a grid crossing
+   instead — which, applied to every cell, puts a dot on every crossing
+   the grid actually has one of. Shared by all three draw paths below so
+   flipping the toggle moves the live cells, the small-cell pixels, and
+   the stamp preview together. */
+function cell_anchor() {
+	return stones_on_lines ? 0 : cell_size / 2;
+}
+
 /* Big cells: one antialiased arc each. A few thousand of these is nothing,
    and it is the only way to get a round cell that looks round. */
 function draw_cells_as_circles() {
@@ -362,11 +377,11 @@ function draw_cells_as_circles() {
 	cell_ctx.fillStyle = COLORS.cell;
 
 	const radius = (cell_size * CELL_FILL) / 2;
-	const half   = cell_size / 2;
+	const anchor = cell_anchor();
 
 	for (let row = 0; row < rows; row++) {
 		const base = row * cols;
-		const cy = row * cell_size + half;
+		const cy = row * cell_size + anchor;
 
 		for (let col = 0; col < cols; col++) {
 			const a = age[base + col];
@@ -374,7 +389,7 @@ function draw_cells_as_circles() {
 
 			cell_ctx.globalAlpha = AGE_ALPHA[a];
 			cell_ctx.beginPath();
-			cell_ctx.arc(col * cell_size + half, cy, radius, 0, TAU);
+			cell_ctx.arc(col * cell_size + anchor, cy, radius, 0, TAU);
 			cell_ctx.fill();
 		}
 	}
@@ -400,20 +415,23 @@ function draw_cells_as_pixels() {
 
 	const step_px = cell_size * dpr;
 	const side = Math.max(1, Math.round(cell_size * CELL_FILL * dpr));
-	const inset = (step_px - side) / 2;
+	const anchor = cell_anchor() * dpr;
 	const { r: red, g: green, b: blue } = CELL_RGB;
 
+	// on crossings, the corner cells' squares centre just past the edge of
+	// the canvas, so half the square would fall outside it — clamp rather
+	// than skip, so an edge crossing still gets a (clipped) dot
 	for (let row = 0; row < rows; row++) {
 		const base = row * cols;
-		const y0 = Math.round(row * step_px + inset);
+		const y0 = Math.max(0, Math.round(row * step_px + anchor - side / 2));
+		const y1 = Math.min(height, y0 + side);
 
 		for (let col = 0; col < cols; col++) {
 			const a = age[base + col];
 			if (a === 0) continue;
 
-			const x0 = Math.round(col * step_px + inset);
-			const y1 = Math.min(height, y0 + side);
-			const x1 = Math.min(width,  x0 + side);
+			const x0 = Math.max(0, Math.round(col * step_px + anchor - side / 2));
+			const x1 = Math.min(width, x0 + side);
 
 			for (let y = y0; y < y1; y++) {
 				let o = (y * width + x0) * 4;
@@ -439,14 +457,14 @@ function draw_stamp_preview() {
 
 	const radius = (cell_size * CELL_FILL) / 2;
 	const round  = cell_size >= ROUND_CELL_MIN;
-	const half   = cell_size / 2;
+	const anchor = cell_anchor();
 
 	cell_ctx.globalAlpha = 0.4;
 	for (const [dr, dc] of cells) {
 		const spot = locate(origin_row + dr, origin_col + dc);
 		if (!spot) continue;
-		const cx = spot.col * cell_size + half;
-		const cy = spot.row * cell_size + half;
+		const cx = spot.col * cell_size + anchor;
+		const cy = spot.row * cell_size + anchor;
 		if (round) {
 			cell_ctx.beginPath();
 			cell_ctx.arc(cx, cy, radius, 0, TAU);
@@ -958,6 +976,7 @@ function sync_inputs() {
 
 	el.fit.checked = fit_window;
 	el.wrap.checked = wrap_edges;
+	el.crossings.checked = stones_on_lines;
 	el.rule.value = rule_text;
 	el.palette.value = palette;
 }
@@ -1003,6 +1022,12 @@ el.fit.addEventListener("change", () => {
 
 el.wrap.addEventListener("change", () => {
 	wrap_edges = el.wrap.checked;
+	write_url();
+});
+
+el.crossings.addEventListener("change", () => {
+	stones_on_lines = el.crossings.checked;
+	request_render();
 	write_url();
 });
 
@@ -1094,6 +1119,11 @@ document.addEventListener("keydown", (event) => {
 			el.wrap.dispatchEvent(new Event("change"));
 			break;
 
+		case "g":
+			el.crossings.checked = !el.crossings.checked;
+			el.crossings.dispatchEvent(new Event("change"));
+			break;
+
 		case "Escape":
 			el.pattern.value = "";
 			arm_pattern("");
@@ -1128,13 +1158,15 @@ function write_url() {
 		const p = new URLSearchParams();
 
 		if (fit_window) {
+			p.set("fit", "1");
 			if (zoom !== DEFAULTS.cell) p.set("cell", String(zoom));
 		} else {
-			p.set("rows", String(fixed_rows));
-			p.set("cols", String(fixed_cols));
+			if (fixed_rows !== DEFAULTS.rows) p.set("rows", String(fixed_rows));
+			if (fixed_cols !== DEFAULTS.cols) p.set("cols", String(fixed_cols));
 		}
 		if (rule_text !== DEFAULTS.rule)        p.set("rule", rule_text);
 		if (!wrap_edges)                        p.set("wrap", "0");
+		if (stones_on_lines)                    p.set("dots", "cross");
 		if (trail_percent !== DEFAULTS.trail)   p.set("trail", String(trail_percent));
 		if (steps_per_second !== DEFAULTS.speed) p.set("speed", String(steps_per_second));
 		if (palette)                            p.set("theme", palette);
@@ -1147,15 +1179,16 @@ function write_url() {
 function read_url() {
 	const p = new URLSearchParams(location.search);
 
-	// ?rows=&cols= is how this used to work, so those links still land on
-	// a board of exactly that size — just in fixed mode now
+	fit_window = p.get("fit") === "1";
+
+	// ?rows= and ?cols= are independent and each fall back to the 19x19
+	// default alone, so an old ?rows=100&cols=200 link still lands on
+	// exactly that board — fixed mode is the default now anyway
 	const want_rows = parseInt(p.get("rows"), 10);
 	const want_cols = parseInt(p.get("cols"), 10);
-	if (Number.isFinite(want_rows) && Number.isFinite(want_cols)) {
-		fit_window = false;
-		fixed_rows = Math.min(600, Math.max(MIN_DIM, want_rows));
-		fixed_cols = Math.min(600, Math.max(MIN_DIM, want_cols));
-	}
+	fixed_rows = Number.isFinite(want_rows) ? Math.min(600, Math.max(MIN_DIM, want_rows)) : DEFAULTS.rows;
+	fixed_cols = Number.isFinite(want_cols) ? Math.min(600, Math.max(MIN_DIM, want_cols)) : DEFAULTS.cols;
+	if (Number.isFinite(want_rows) || Number.isFinite(want_cols)) fit_window = false;
 
 	zoom = clamp_int(p.get("cell"), Number(el.zoom.min), Number(el.zoom.max), DEFAULTS.cell);
 	steps_per_second = clamp_int(p.get("speed"), 1, 60, DEFAULTS.speed);
@@ -1163,6 +1196,7 @@ function read_url() {
 	trail_decay = trail_percent / 100;
 	remembered_trail = trail_percent || DEFAULTS.trail;
 	if (p.get("wrap") === "0") wrap_edges = false;
+	if (p.get("dots") === "cross") stones_on_lines = true;
 
 	if (!apply_rule(p.get("rule") || DEFAULTS.rule)) apply_rule(DEFAULTS.rule);
 

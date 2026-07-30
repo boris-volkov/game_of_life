@@ -47,6 +47,7 @@ Keyboard controls:
 		[]] [[]  longer / shorter trails
 		[t]      trails on / off
 		[w]      wrap edges on / off
+		[g]      dots on crossings on / off
 		[esc]    put the stamp away
 
 The **rule** box is worth playing with too. Conway's rules written out in the standard notation are `B3/S23` — a dead cell is *born* with exactly 3 live neighbours, and a live cell *survives* on 2 or 3. Every other cellular automaton of this family is just a different pair of digit lists, so you can type them straight in. Try `B36/S23` ("HighLife", which has a tiny self-replicating pattern), or `B35678/S5678` ("Day & Night"), or make one up. Most rules you invent at random either die out immediately or fill the whole board — the interesting ones sit right on the boundary between those two fates, which is part of what makes Conway's choice a good one.
@@ -57,18 +58,20 @@ Neither of these is quite the "classic game of life" though, which lives on an i
 
 ### Sizing the board
 
-The board fits itself to your window. The **zoom** slider sets how big a cell is, and the number of rows and columns follows from however many fit in the space — so it always fills the screen and never spills off the bottom. If you want a specific size instead, type it into the **rows** and **cols** boxes; that unticks "fit window" and picks whatever zoom shows the whole board at once. Tick "fit window" again to go back.
+The board opens at a fixed 19x19 — a go board's line count, and a nice size to start exploring on. Type different numbers into the **rows** and **cols** boxes for any other fixed size. Or tick **fit window**, and the board switches to filling the screen instead: the **zoom** slider sets how big a cell is, and the row and column count follows from however many fit in the space, so it always fills the screen and never spills off the bottom.
 
-### Palettes
+### Palettes, and stones on a go board
 
 The **palette** menu reskins the whole board, not just the cells: *go board* for black stones on a wooden goban, *chalkboard* for chalk-white cells on green, *paper* for black ink on white (good for a projector in a bright room), and *amber* for an old phosphor terminal. It's all driven by a handful of CSS variables in [style.css](style.css), so adding another palette is a matter of picking colours, not touching the code.
+
+The **on crossings** checkbox moves every cell's dot from the middle of its square to the square's corner — a grid crossing — instead. Since the grid itself doesn't change, this is really just choosing which point in the existing lattice a cell's dot belongs to. Combine it with the *go board* palette and the default 19x19 size, and you've got a passable imitation of stones sitting on the intersections of a goban. (It isn't a pixel-perfect one: a real 19-line board has 19 crossings running edge to edge, while stretching our square grid this way leaves one line's worth of empty margin along the bottom and right. Close enough to be worth having as a toggle, not worth the bookkeeping to fix.)
 
 The settings also live in the address bar, so any board you set up is a link you can hand out:
 
 	https://boris-volkov.github.io/game_of_life/?rows=100&cols=200
-	https://boris-volkov.github.io/game_of_life/?cell=6&rule=B36/S23&trail=80
-	https://boris-volkov.github.io/game_of_life/?theme=go
+	https://boris-volkov.github.io/game_of_life/?fit=1&cell=6&rule=B36/S23&trail=80
+	https://boris-volkov.github.io/game_of_life/?theme=go&dots=cross
 
-Recognised parameters are `rows` and `cols` (a fixed board), `cell` (cell size in pixels), `rule`, `wrap=0`, `trail`, `speed`, and `theme` (`go`, `chalk`, `paper`, or `amber`). Changing anything in the page updates the URL to match, so you can also just get things looking how you want and then copy the address.
+Recognised parameters are `rows` and `cols` (a fixed board, 19x19 if neither is given), `fit=1` (fit the window instead) with `cell` (cell size in pixels), `rule`, `wrap=0`, `dots=cross`, `trail`, `speed`, and `theme` (`go`, `chalk`, `paper`, or `amber`). Changing anything in the page updates the URL to match, so you can also just get things looking how you want and then copy the address.
 
 Okay, that's all you need to know. Now have fun with it. As always, the code is below, and you should take a look under the hood to see how all this works.
