@@ -64,7 +64,7 @@ The board opens at a fixed 19x19 — a go board's line count, and a nice size to
 
 The **palette** menu reskins the whole board, not just the cells: *go board* for black stones on a wooden goban, *chalkboard* for chalk-white cells on green, *paper* for black ink on white (good for a projector in a bright room), and *amber* for an old phosphor terminal. It's all driven by a handful of CSS variables in [style.css](style.css), so adding another palette is a matter of picking colours, not touching the code.
 
-The **on crossings** checkbox moves every cell's dot from the middle of its square to the square's corner — a grid crossing — instead. Since the grid itself doesn't change, this is really just choosing which point in the existing lattice a cell's dot belongs to. Combine it with the *go board* palette and the default 19x19 size, and you've got a passable imitation of stones sitting on the intersections of a goban. (It isn't a pixel-perfect one: a real 19-line board has 19 crossings running edge to edge, while stretching our square grid this way leaves one line's worth of empty margin along the bottom and right. Close enough to be worth having as a toggle, not worth the bookkeeping to fix.)
+The **on crossings** checkbox moves the *grid lines*, not the dots: each cell's dot always sits dead centre of its square, and normally the lines run around that, marking the square's edges. Tick the box and the lines instead run through the dots, meeting each one where the lines cross. Combine it with the *go board* palette and the default 19x19 size, and you've got a passable imitation of stones sitting on the intersections of a goban.
 
 The settings also live in the address bar, so any board you set up is a link you can hand out:
 

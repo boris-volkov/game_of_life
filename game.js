@@ -329,13 +329,25 @@ function draw_grid_layer() {
 	grid_ctx.lineWidth = 1 / dpr;           // one physical pixel, any display
 	grid_ctx.beginPath();
 
-	for (let row = 0; row <= rows; row++) {
-		const y = crisp(row * cell_size);
+	/* Normally the lines mark cell *boundaries*: rows+1 of them, running
+	   flush to every edge. On crossings the dots stay put — dead centre
+	   of their cell, same as always — and the lines move instead, to run
+	   through those centres rather than around them. That means exactly
+	   `rows` lines rather than rows+1, each inset half a cell from the
+	   edge, so every dot's crossing sits fully on screen with a matching
+	   half-cell margin on all four sides, rather than the dots sitting
+	   on the lines and the outermost ones clipping off the board. */
+	const line_rows = stones_on_lines ? rows : rows + 1;
+	const line_cols = stones_on_lines ? cols : cols + 1;
+	const offset     = stones_on_lines ? 0.5 : 0;
+
+	for (let row = 0; row < line_rows; row++) {
+		const y = crisp((row + offset) * cell_size);
 		grid_ctx.moveTo(0, y);
 		grid_ctx.lineTo(css_w, y);
 	}
-	for (let col = 0; col <= cols; col++) {
-		const x = crisp(col * cell_size);
+	for (let col = 0; col < line_cols; col++) {
+		const x = crisp((col + offset) * cell_size);
 		grid_ctx.moveTo(x, 0);
 		grid_ctx.lineTo(x, css_h);
 	}
@@ -360,28 +372,25 @@ function draw_cells() {
 	if (armed_pattern && hover) draw_stamp_preview();
 }
 
-/* Where a cell's dot gets drawn within its square: dead centre normally,
-   or the square's top-left corner when it should sit on a grid crossing
-   instead — which, applied to every cell, puts a dot on every crossing
-   the grid actually has one of. Shared by all three draw paths below so
-   flipping the toggle moves the live cells, the small-cell pixels, and
-   the stamp preview together. */
-function cell_anchor() {
-	return stones_on_lines ? 0 : cell_size / 2;
-}
-
 /* Big cells: one antialiased arc each. A few thousand of these is nothing,
-   and it is the only way to get a round cell that looks round. */
+   and it is the only way to get a round cell that looks round.
+
+   The dot always sits dead centre of its cell, in every mode — it is the
+   grid that moves to meet it on crossings, over in draw_grid_layer(), not
+   the other way round. That keeps every dot fully on screen regardless of
+   which mode is active, since "centre of a cell that is itself on screen"
+   can never land outside the canvas the way "corner of the edge cells"
+   would. */
 function draw_cells_as_circles() {
 	cell_ctx.clearRect(0, 0, css_w, css_h);
 	cell_ctx.fillStyle = COLORS.cell;
 
 	const radius = (cell_size * CELL_FILL) / 2;
-	const anchor = cell_anchor();
+	const half   = cell_size / 2;
 
 	for (let row = 0; row < rows; row++) {
 		const base = row * cols;
-		const cy = row * cell_size + anchor;
+		const cy = row * cell_size + half;
 
 		for (let col = 0; col < cols; col++) {
 			const a = age[base + col];
@@ -389,7 +398,7 @@ function draw_cells_as_circles() {
 
 			cell_ctx.globalAlpha = AGE_ALPHA[a];
 			cell_ctx.beginPath();
-			cell_ctx.arc(col * cell_size + anchor, cy, radius, 0, TAU);
+			cell_ctx.arc(col * cell_size + half, cy, radius, 0, TAU);
 			cell_ctx.fill();
 		}
 	}
@@ -415,22 +424,19 @@ function draw_cells_as_pixels() {
 
 	const step_px = cell_size * dpr;
 	const side = Math.max(1, Math.round(cell_size * CELL_FILL * dpr));
-	const anchor = cell_anchor() * dpr;
+	const inset = (step_px - side) / 2;
 	const { r: red, g: green, b: blue } = CELL_RGB;
 
-	// on crossings, the corner cells' squares centre just past the edge of
-	// the canvas, so half the square would fall outside it — clamp rather
-	// than skip, so an edge crossing still gets a (clipped) dot
 	for (let row = 0; row < rows; row++) {
 		const base = row * cols;
-		const y0 = Math.max(0, Math.round(row * step_px + anchor - side / 2));
+		const y0 = Math.round(row * step_px + inset);
 		const y1 = Math.min(height, y0 + side);
 
 		for (let col = 0; col < cols; col++) {
 			const a = age[base + col];
 			if (a === 0) continue;
 
-			const x0 = Math.max(0, Math.round(col * step_px + anchor - side / 2));
+			const x0 = Math.round(col * step_px + inset);
 			const x1 = Math.min(width, x0 + side);
 
 			for (let y = y0; y < y1; y++) {
@@ -457,14 +463,14 @@ function draw_stamp_preview() {
 
 	const radius = (cell_size * CELL_FILL) / 2;
 	const round  = cell_size >= ROUND_CELL_MIN;
-	const anchor = cell_anchor();
+	const half   = cell_size / 2;
 
 	cell_ctx.globalAlpha = 0.4;
 	for (const [dr, dc] of cells) {
 		const spot = locate(origin_row + dr, origin_col + dc);
 		if (!spot) continue;
-		const cx = spot.col * cell_size + anchor;
-		const cy = spot.row * cell_size + anchor;
+		const cx = spot.col * cell_size + half;
+		const cy = spot.row * cell_size + half;
 		if (round) {
 			cell_ctx.beginPath();
 			cell_ctx.arc(cx, cy, radius, 0, TAU);
