@@ -1033,6 +1033,11 @@ el.wrap.addEventListener("change", () => {
 
 el.crossings.addEventListener("change", () => {
 	stones_on_lines = el.crossings.checked;
+	// the crossings mode moves the *grid* lines, which live on their own
+	// canvas that is only ever repainted on resize or a palette change —
+	// this needs to join that list too, or the toggle does nothing
+	// visible until something else happens to force a redraw
+	draw_grid_layer();
 	request_render();
 	write_url();
 });
