@@ -38,6 +38,9 @@ const AGE_MAX        = 255;  // a just-died cell starts fading from here
 const RANDOM_DENSITY = 0.28;
 const DEFAULTS       = { cell: 14, speed: 12, trail: 60, rule: "B3/S23" };
 
+// valid data-palette values; "" is the default look defined on :root itself
+const PALETTES = ["", "go", "chalk", "paper", "amber"];
+
 
 /* ---- the page --------------------------------------------------- */
 
@@ -59,6 +62,7 @@ const el = {
 	wrap:    document.querySelector("#wrap"),
 	rule:    document.querySelector("#rule"),
 	pattern: document.querySelector("#pattern"),
+	palette: document.querySelector("#palette"),
 
 	zoom_out:  document.querySelector("#zoom_out"),
 	speed_out: document.querySelector("#speed_out"),
@@ -73,13 +77,21 @@ const el = {
 const grid_ctx = el.grid.getContext("2d");
 const cell_ctx = el.cells.getContext("2d");
 
-// colours come from the stylesheet so style.css stays the single source
-const css = getComputedStyle(document.documentElement);
-const COLORS = {
-	board: css.getPropertyValue("--board").trim()     || "#202d37",
-	line:  css.getPropertyValue("--grid-line").trim() || "rgba(150,200,220,0.09)",
-	cell:  css.getPropertyValue("--cell").trim()      || "#bbffcc",
-};
+/* Colours come from the stylesheet, keyed off data-palette on <html>, so
+   style.css stays the single place a colour is written down — adding a
+   palette is a CSS block plus one <option>, nothing here has to change.
+   read_theme() re-reads the current values; call it after switching
+   data-palette and the board picks up the new look on the next render. */
+let COLORS = { board: "", line: "", cell: "" };
+let CELL_RGB = { r: 0, g: 0, b: 0 };
+
+function read_theme() {
+	const css = getComputedStyle(document.documentElement);
+	COLORS.board = css.getPropertyValue("--board").trim()     || "#202d37";
+	COLORS.line  = css.getPropertyValue("--grid-line").trim() || "rgba(150,200,220,0.09)";
+	COLORS.cell  = css.getPropertyValue("--cell").trim()      || "#bbffcc";
+	CELL_RGB = resolve_rgb(COLORS.cell);
+}
 
 /* The pixel-writing path needs the cell colour as three bytes, but the
    stylesheet is free to write it as a hex code, rgb(), a colour name, or
@@ -95,7 +107,7 @@ function resolve_rgb(color) {
 	return { r, g, b };
 }
 
-const CELL_RGB = resolve_rgb(COLORS.cell);
+read_theme();
 
 const TAU = Math.PI * 2;
 
@@ -125,6 +137,8 @@ let remembered_trail = DEFAULTS.trail;  // so [t] can put the trail back
 
 let rule_text = DEFAULTS.rule;
 let birth_mask = 0, survive_mask = 0;   // bit n set == "n neighbours does it"
+
+let palette = "";                // "" is the default look; see PALETTES
 
 let generation = 0;
 let population = 0;
@@ -945,6 +959,7 @@ function sync_inputs() {
 	el.fit.checked = fit_window;
 	el.wrap.checked = wrap_edges;
 	el.rule.value = rule_text;
+	el.palette.value = palette;
 }
 
 el.step.addEventListener("click", single_step);
@@ -1011,6 +1026,24 @@ el.rule.addEventListener("input", () => {
 });
 
 el.pattern.addEventListener("change", () => arm_pattern(el.pattern.value));
+
+/* Swap the whole re-skin: set data-palette, re-read the CSS variables it
+   changes, then repaint both layers, since the grid layer is normally
+   only ever redrawn on resize. */
+function apply_palette(name) {
+	palette = PALETTES.includes(name) ? name : "";
+	if (palette) document.documentElement.dataset.palette = palette;
+	else         delete document.documentElement.dataset.palette;
+
+	read_theme();
+	draw_grid_layer();
+	request_render();
+}
+
+el.palette.addEventListener("change", () => {
+	apply_palette(el.palette.value);
+	write_url();
+});
 
 function clamp_int(value, lo, hi, fallback) {
 	const n = parseInt(value, 10);
@@ -1104,6 +1137,7 @@ function write_url() {
 		if (!wrap_edges)                        p.set("wrap", "0");
 		if (trail_percent !== DEFAULTS.trail)   p.set("trail", String(trail_percent));
 		if (steps_per_second !== DEFAULTS.speed) p.set("speed", String(steps_per_second));
+		if (palette)                            p.set("theme", palette);
 
 		const query = p.toString();
 		history.replaceState(null, "", location.pathname + (query ? "?" + query : ""));
@@ -1131,6 +1165,14 @@ function read_url() {
 	if (p.get("wrap") === "0") wrap_edges = false;
 
 	if (!apply_rule(p.get("rule") || DEFAULTS.rule)) apply_rule(DEFAULTS.rule);
+
+	// only set the attribute here; read_theme() runs afterwards in init(),
+	// once, right before the first layout paints anything
+	const want_theme = p.get("theme") || "";
+	if (PALETTES.includes(want_theme) && want_theme) {
+		palette = want_theme;
+		document.documentElement.dataset.palette = palette;
+	}
 }
 
 
@@ -1152,6 +1194,7 @@ function read_url() {
 function init() {
 	build_pattern_menu();
 	read_url();
+	read_theme();   // picks up whatever data-palette read_url() just set
 	relayout();
 
 	new ResizeObserver(relayout).observe(el.stage);

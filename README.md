@@ -59,11 +59,16 @@ Neither of these is quite the "classic game of life" though, which lives on an i
 
 The board fits itself to your window. The **zoom** slider sets how big a cell is, and the number of rows and columns follows from however many fit in the space — so it always fills the screen and never spills off the bottom. If you want a specific size instead, type it into the **rows** and **cols** boxes; that unticks "fit window" and picks whatever zoom shows the whole board at once. Tick "fit window" again to go back.
 
+### Palettes
+
+The **palette** menu reskins the whole board, not just the cells: *go board* for black stones on a wooden goban, *chalkboard* for chalk-white cells on green, *paper* for black ink on white (good for a projector in a bright room), and *amber* for an old phosphor terminal. It's all driven by a handful of CSS variables in [style.css](style.css), so adding another palette is a matter of picking colours, not touching the code.
+
 The settings also live in the address bar, so any board you set up is a link you can hand out:
 
 	https://boris-volkov.github.io/game_of_life/?rows=100&cols=200
 	https://boris-volkov.github.io/game_of_life/?cell=6&rule=B36/S23&trail=80
+	https://boris-volkov.github.io/game_of_life/?theme=go
 
-Recognised parameters are `rows` and `cols` (a fixed board), `cell` (cell size in pixels), `rule`, `wrap=0`, `trail`, and `speed`. Changing anything in the page updates the URL to match, so you can also just get things looking how you want and then copy the address.
+Recognised parameters are `rows` and `cols` (a fixed board), `cell` (cell size in pixels), `rule`, `wrap=0`, `trail`, `speed`, and `theme` (`go`, `chalk`, `paper`, or `amber`). Changing anything in the page updates the URL to match, so you can also just get things looking how you want and then copy the address.
 
 Okay, that's all you need to know. Now have fun with it. As always, the code is below, and you should take a look under the hood to see how all this works.

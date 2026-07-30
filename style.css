@@ -23,6 +23,70 @@
 	--mono:      "Courier New", ui-monospace, monospace;
 }
 
+/* ---------- palettes -----------------------------------------------
+   Each is a full re-skin: board, grid, cells, and the control bar all
+   swap together, selected by data-palette on <html>. game.js sets that
+   attribute and re-reads these variables with getComputedStyle, so a
+   new palette only ever needs adding here plus one <option> in
+   index.html — nothing in game.js has to change.
+   -------------------------------------------------------------------- */
+
+/* go board: black stones on a kaya-wood goban */
+:root[data-palette="go"] {
+	--page:      #2c2013;
+	--board:     #e3c383;
+	--grid-line: rgba(60, 38, 12, 0.4);
+	--cell:      #191512;
+
+	--panel:        #4a3826;
+	--panel-hover:  #5c4630;
+	--panel-active: #7a5b3a;
+	--ink:          #d9c4a3;
+	--accent:       #d1a941;
+}
+
+/* chalkboard: chalk-white cells on a green board */
+:root[data-palette="chalk"] {
+	--page:      #0b1f14;
+	--board:     #17321f;
+	--grid-line: rgba(255, 255, 255, 0.07);
+	--cell:      #f5f2e6;
+
+	--panel:        #1c2b20;
+	--panel-hover:  #24382a;
+	--panel-active: #3c5c3f;
+	--ink:          #9ec1a1;
+	--accent:       #f2c94c;
+}
+
+/* paper: black ink on white, for a projector in a bright room */
+:root[data-palette="paper"] {
+	--page:      #dcdcdc;
+	--board:     #ffffff;
+	--grid-line: rgba(0, 0, 0, 0.09);
+	--cell:      #161616;
+
+	--panel:        #d6d6d6;
+	--panel-hover:  #c9c9c9;
+	--panel-active: #b3b3b3;
+	--ink:          #3c3c3c;
+	--accent:       #b0343a;
+}
+
+/* amber: a phosphor terminal */
+:root[data-palette="amber"] {
+	--page:      #150e05;
+	--board:     #100b03;
+	--grid-line: rgba(255, 176, 0, 0.09);
+	--cell:      #ffb000;
+
+	--panel:        #2a1c0d;
+	--panel-hover:  #3a2712;
+	--panel-active: #5a3b18;
+	--ink:          #b3812f;
+	--accent:       #ffb000;
+}
+
 * { box-sizing: border-box; }
 
 html, body {
@@ -207,7 +271,7 @@ body {
 	width: 13px;
 	height: 13px;
 	margin: 0;
-	accent-color: coral;
+	accent-color: var(--accent);
 	cursor: pointer;
 }
 
