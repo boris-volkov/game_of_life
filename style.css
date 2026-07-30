@@ -1,66 +1,279 @@
+/* ------------------------------------------------------------------
+   Conway's Game of Life
+
+   The colours live here as custom properties and game.js reads them
+   back out with getComputedStyle, so this file is the only place a
+   colour is written down. Retheme the whole thing from this block.
+   ------------------------------------------------------------------ */
+
+:root {
+	--page:      #101822;  /* behind everything */
+	--board:     #202d37;  /* the dead board itself */
+	--grid-line: rgba(150, 200, 220, 0.09);
+	--cell:      #bbffcc;  /* living cells */
+
+	--panel:        #232833;
+	--panel-hover:  #2a3546;
+	--panel-active: #35507f;
+	--ink:          #8fa3b5;
+	--accent:       coral;
+
+	--bar-gap:   2px;
+	--radius:    10px;
+	--mono:      "Courier New", ui-monospace, monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+	height: 100%;
+	margin: 0;
+}
 
 body {
-	cursor: crosshair;
-	background-color: #123;
-}
+	background: var(--page);
+	color: var(--ink);
+	font-family: var(--mono);
+	font-size: 13px;
 
-
-div.outer{
-	margin-top: 5px;
-	display:flex;
+	/* the page itself never scrolls: the board is fitted to what is left
+	   over after the control bar. 100dvh rather than 100vh so mobile
+	   browser chrome sliding in and out does not clip the board. */
+	height: 100dvh;
+	display: flex;
 	flex-direction: column;
-	justify-content: center;
-	/*overflow: auto;*/
+	overflow: hidden;
 }
 
 
-div.control_bar{
-	margin: auto;
-	width: 95vw;
-	position: sticky;
-	top: 0;
+/* ---------- control bar ------------------------------------------- */
+
+.controls {
+	flex: 0 0 auto;
+	display: flex;
+	flex-direction: column;
+	gap: var(--bar-gap);
+	padding: 0 0 var(--bar-gap);
+	user-select: none;
+	-webkit-user-select: none;
+	-webkit-touch-callout: none;
+}
+
+.row {
 	display: flex;
 	flex-direction: row;
-	align-content: stretch;
+	flex-wrap: wrap;
+	gap: var(--bar-gap);
+	align-items: stretch;
 }
 
-.control_bar div {
-	text-align : center;
-	background-color: rgb(35,40,50);
-	flex : 1;
-	color: #678;
-	color: coral;
-	font-family: Courier new;
-	padding-bottom: 10px;
-	padding-top: 10px;
-	-webkit-touch-callout: none;
-    -webkit-user-select: none;
-    -khtml-user-select: none;
-    -moz-user-select: none;
-    -ms-user-select: none;
-    user-select: none;
-	opacity: 0.8;
+/* --- transport buttons (step / play / reset / clear / random) --- */
+
+.transport button,
+.transport .readout {
+	flex: 1 1 0;
+	min-width: 64px;
+	padding: 11px 6px;
+	border: 0;
+	background: var(--panel);
+	color: var(--accent);
+	font: inherit;
+	text-align: center;
+	cursor: pointer;
+	opacity: 0.85;
+	transition: background-color 90ms linear;
 }
 
-.control_bar div:active {
-	background-color: #358;
+.transport button:hover   { background: var(--panel-hover); }
+.transport button:active  { background: var(--panel-active); }
+.transport button:focus-visible {
+	outline: 1px solid var(--accent);
+	outline-offset: -3px;
 }
 
-.control_bar div:hover {
-	background-color: #245;
+.transport > :first-child { border-bottom-left-radius:  var(--radius); }
+.transport > :last-child  { border-bottom-right-radius: var(--radius); }
+
+/* running state: the play button reads "pause" and sits lit up */
+.transport button.on {
+	background: var(--panel-active);
+	opacity: 1;
 }
 
-.control_bar div:first-child{
-	border-bottom-left-radius: 20px;
+.readout {
+	flex: 0 1 auto;
+	min-width: 96px;
+	cursor: default;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 7px;
 }
 
-.control_bar div:last-child{
-	border-bottom-right-radius: 20px;
+.readout span { color: var(--ink); opacity: 0.55; }
+.readout b    { color: var(--accent); font-weight: normal; }
+
+
+/* --- settings row --------------------------------------------------- */
+
+.settings {
+	padding: 0 var(--bar-gap);
+	justify-content: center;
 }
 
+.field {
+	display: flex;
+	align-items: center;
+	gap: 7px;
+	padding: 6px 11px;
+	background: var(--panel);
+	border-radius: var(--radius);
+	opacity: 0.85;
+	cursor: pointer;
+	white-space: nowrap;
+}
 
-canvas{
-	border: 1px solid rgb(35,40,50);
+.field > span { opacity: 0.6; }
+
+.field output {
+	color: var(--accent);
+	min-width: 32px;
+	text-align: right;
+	font-variant-numeric: tabular-nums;
+}
+
+/* sliders */
+.field input[type="range"] {
+	-webkit-appearance: none;
+	appearance: none;
+	width: 84px;
+	height: 3px;
+	margin: 0;
+	background: #3d4757;
+	border-radius: 2px;
+	cursor: pointer;
+}
+
+.field input[type="range"]::-webkit-slider-thumb {
+	-webkit-appearance: none;
+	appearance: none;
+	width: 13px;
+	height: 13px;
+	border: 0;
+	border-radius: 50%;
+	background: var(--accent);
+	cursor: pointer;
+}
+
+.field input[type="range"]::-moz-range-thumb {
+	width: 13px;
+	height: 13px;
+	border: 0;
+	border-radius: 50%;
+	background: var(--accent);
+	cursor: pointer;
+}
+
+/* text + number boxes */
+.field input[type="text"],
+.field input[type="number"],
+.field select {
+	width: 62px;
+	padding: 3px 5px;
+	border: 1px solid #3d4757;
+	border-radius: 5px;
+	background: #1a212b;
+	color: var(--accent);
+	font: inherit;
+	cursor: pointer;
+}
+
+.field select { width: auto; max-width: 168px; }
+
+.field input:disabled {
+	opacity: 0.45;
+	cursor: not-allowed;
+}
+
+/* a rule string that does not parse — keep the old rule, flag the box */
+.field input.invalid {
+	border-color: #c0603f;
+	color: #e08262;
+}
+
+.field.check { gap: 6px; }
+
+.field input[type="checkbox"] {
+	width: 13px;
+	height: 13px;
+	margin: 0;
+	accent-color: coral;
+	cursor: pointer;
+}
+
+.field:focus-within { opacity: 1; }
+
+
+/* ---------- the board --------------------------------------------- */
+
+.stage {
+	flex: 1 1 auto;
+	min-height: 0;          /* lets the flex child actually shrink */
+	display: flex;
+	overflow: hidden;
+}
+
+/* Only a fixed-size board can be larger than the window, so only that mode
+   gets to scroll. Reserving the gutter keeps a scrollbar appearing from
+   shrinking the stage, which would otherwise re-trigger the fit and let the
+   two fight each other. */
+.stage.scrollable {
+	overflow: auto;
+	scrollbar-gutter: stable;
+}
+
+/* margin:auto centres the board and, unlike place-items:center, still
+   lets you scroll to the top-left edge when it does overflow. */
+.board {
+	margin: auto;
+	position: relative;
+	line-height: 0;
+}
+
+.board canvas {
 	display: block;
-	margin:auto;
+}
+
+/* the cell layer sits exactly on top of the static grid layer */
+#cell_layer {
+	position: absolute;
+	top: 0;
+	left: 0;
+	cursor: crosshair;
+	touch-action: none;     /* so dragging paints instead of scrolling */
+}
+
+/* while a stamp is armed, the cursor says "I am going to place a thing" */
+#cell_layer.stamping {
+	cursor: copy;
+}
+
+
+/* ---------- narrow screens ---------------------------------------- */
+
+@media (max-width: 760px) {
+	body { font-size: 12px; }
+
+	.transport button,
+	.transport .readout {
+		min-width: 0;
+		padding: 13px 2px;   /* taller: easier to hit with a thumb */
+	}
+
+	.readout { min-width: 72px; }
+
+	.settings { justify-content: flex-start; overflow-x: auto; }
+
+	.field { padding: 6px 9px; }
+	.field input[type="range"] { width: 62px; }
 }

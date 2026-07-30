@@ -27,23 +27,43 @@ this combination, for example:
 		░░●░░░░░░
 		░░░░░░░░░
 
-evolves in a very interesting way. Can you find any other interesting patterns? Click on squares to turn them on/off. The counter at the bottom right of the board counts how many generations have passed since you last clicked. You can make a generation pass by pressing the leftmost button, or you can play it as an animation with the play button. The square pauses the game, and the back button returns you to your last set up. The final button clears the screen. You can alwalys just refresh the page to reset it as well.
+evolves in a very interesting way. It is in the "stamp" menu as *class demo* if you want to drop it straight onto the board.
 
-Additionally, for speed there are also keyboard controls:
+Can you find any other interesting patterns? **Click a cell to turn it on or off, or drag to draw a whole line of them.** The `gen` counter tells you how many generations have passed, and `pop` how many cells are currently alive. `step` advances one generation, `play` runs it as an animation, `reset` returns you to your last setup, and `clear` empties the board. You can always just refresh the page to start over.
 
-		[n]  next generation
-		[p]  play
-		[s]  stop
-		[x]  clear
-		[r]  reset to last setup
-		[?]  randomize
+The **stamp** menu holds a handful of the classic patterns — a glider, a lightweight spaceship, a pulsar, the R-pentomino, an acorn, a diehard, and Gosper's glider gun, which is the one that manufactures gliders forever. Pick one and it follows your cursor as a faint outline; click to place it. Choose *draw cells* (or press escape) to go back to drawing by hand.
 
-Oh, and one more important detail: I've altered the game a little here. The trouble is in how to deal with the edges of the board. There are several ways to answer this question: you can treat it as if your board is just a section of an infinite board stretching out in all directions, so if you send out a glider, it will just go on out of the edge and on to infinity. Another way is to treat the squares outside of the board as if they do not exist at all, as if there is a wall around the boundary of the grid. In this universe, a glider will hit the wall and turn into a 2x2 square. There is another way, which is to topologically identify the grid as a torus, by linking the right edge to the left edge, and the top edge to the bottom edge. In this world, a spaceship the leaves the left edge, will fly in seamlessly from the left edge. (like the old asteroids game) This is the way that I have chosen for this current application. I've found that there is more opportunity for life in this kind of universe, though of course this is not quite the "classic game of life" in which you can do crazy things like set up  Turing Machines that operate things like digital clocks and even the game of life itself. In order to mod this torroidal universe into that infinite one, you will have to adjust the count neighbors function, and add methods to dynamically resize the grid based on where the action is. This would be a good project.
+Keyboard controls:
 
-In this current version, you can change the size of the grid through url parameters, to do this you have to take your mouse and keyboard, and add to the URL of the page :    ?rows=100&cols=200     no spaces!. so the URL would look something like: 
+		[space]  play / pause
+		[n]      next generation
+		[p]      play
+		[s]      stop
+		[x]      clear
+		[r]      reset to last setup
+		[?]      randomize
+		[+] [-]  faster / slower
+		[.] [,]  zoom in / out
+		[]] [[]  longer / shorter trails
+		[t]      trails on / off
+		[w]      wrap edges on / off
+		[esc]    put the stamp away
+
+The **rule** box is worth playing with too. Conway's rules written out in the standard notation are `B3/S23` — a dead cell is *born* with exactly 3 live neighbours, and a live cell *survives* on 2 or 3. Every other cellular automaton of this family is just a different pair of digit lists, so you can type them straight in. Try `B36/S23` ("HighLife", which has a tiny self-replicating pattern), or `B35678/S5678` ("Day & Night"), or make one up. Most rules you invent at random either die out immediately or fill the whole board — the interesting ones sit right on the boundary between those two fates, which is part of what makes Conway's choice a good one.
+
+Oh, and one more important detail: I've altered the game a little here. The trouble is in how to deal with the edges of the board. There are several ways to answer this question: you can treat it as if your board is just a section of an infinite board stretching out in all directions, so if you send out a glider, it will just go on out of the edge and on to infinity. Another way is to treat the squares outside of the board as if they do not exist at all, as if there is a wall around the boundary of the grid. In this universe, a glider will hit the wall and turn into a 2x2 square. There is another way, which is to topologically identify the grid as a torus, by linking the right edge to the left edge, and the top edge to the bottom edge. In this world, a spaceship the leaves the left edge, will fly in seamlessly from the left edge. (like the old asteroids game) This is the default here, and I've found that there is more opportunity for life in this kind of universe. The **wrap edges** checkbox switches between the two: leave it on for the torus, turn it off and the board gets hard walls, so a glider that hits one collapses into a 2x2 block. Watching the same starting position play out under both is a nice way to see that the rules alone don't determine the game — the shape of the space matters too.
+
+Neither of these is quite the "classic game of life" though, which lives on an infinite plane, and in which you can do crazy things like set up Turing Machines that operate digital clocks and even the game of life itself. Getting there from here means letting the grid grow itself wherever the action is, instead of living inside a fixed rectangle. That is still a good project if you want one.
+
+### Sizing the board
+
+The board fits itself to your window. The **zoom** slider sets how big a cell is, and the number of rows and columns follows from however many fit in the space — so it always fills the screen and never spills off the bottom. If you want a specific size instead, type it into the **rows** and **cols** boxes; that unticks "fit window" and picks whatever zoom shows the whole board at once. Tick "fit window" again to go back.
+
+The settings also live in the address bar, so any board you set up is a link you can hand out:
 
 	https://boris-volkov.github.io/game_of_life/?rows=100&cols=200
+	https://boris-volkov.github.io/game_of_life/?cell=6&rule=B36/S23&trail=80
 
-Load the page with this new URL, and the grid will now be 100 rows by 200 columns.
+Recognised parameters are `rows` and `cols` (a fixed board), `cell` (cell size in pixels), `rule`, `wrap=0`, `trail`, and `speed`. Changing anything in the page updates the URL to match, so you can also just get things looking how you want and then copy the address.
 
 Okay, that's all you need to know. Now have fun with it. As always, the code is below, and you should take a look under the hood to see how all this works.

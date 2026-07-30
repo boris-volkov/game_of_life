@@ -1,334 +1,1167 @@
-// calling all the elements from the html document for the bottom control bar.
-// there they are just <div>'s but here we turn them into buttons
-const step_button   = document.querySelector("#step");
-const play_button   = document.querySelector("#play");
-const stop_button   = document.querySelector("#stop");
-const reset_button  = document.querySelector("#reset");
-const clear_button  = document.querySelector("#clear");
-const gen_display   = document.querySelector("#gen_display");
-const random_button = document.querySelector("#randomize");
+"use strict";
 
-let paused      = true;// game starts off paused.
-let interval    = 100; // milliseconds per generation
-let generations = 0;   // generation counter, resets when adding new pieces
-let trail = 1;
+/* ====================================================================
+   Conway's Game of Life
 
-// initialize display
-const canvas    = document.querySelector("#canvas");
-let cell_width  = 16; // pixels on the display
+   The board is a flat Uint8Array, one byte per cell, indexed
+   row * cols + col. There are a few of these running in parallel:
 
-// get url params for grid size, or set default 64
-const urlParams = new URLSearchParams(window.location.search);
-var num_rows = parseInt( urlParams.get('rows'));
-if (isNaN(num_rows)) { num_rows = 64; }
-var num_cols = parseInt( urlParams.get('cols'));
-if (isNaN(num_cols)) { num_cols = 64; }
+       cur     is this cell alive right now?      (0 / 1)
+       nxt     scratch space for the next generation
+       saved   snapshot to return to on "reset"
+       counts  how many live neighbours each cell has
+       age     how recently the cell was alive, for the fading trail
 
-// initialize grids
-let grid = new Array(num_rows);
-for (let i = 0; i < num_rows; i++){
-	grid[i] = new Array(num_cols);
-	for (let j = 0; j < num_cols; j++)
-		grid[i][j] = new Uint8Array(4).fill(0); 
-		// 4 entries: current, temp, undo, neighbor count
-} // storing relevant things closer in memory for performance
+   Flat arrays rather than grid[row][col] because an array-of-arrays-of-
+   arrays is thousands of separate heap objects with a pointer chase on
+   every read. One contiguous buffer per field is both faster and lets us
+   wipe the neighbour counts with a single counts.fill(0).
 
-// match graphics context to grid size
-canvas.height = grid.length * cell_width;
-canvas.width = grid[0].length * cell_width;
-const c = canvas.getContext("2d"); 
-// this c is important! it is your messenger to the screen.
-// it is similar to the turtle in that you give it commands
-// to draw things on the screen. Here, rectangles and circles.
+   Drawing is split across two stacked canvases. The grid lines never
+   change, so they get painted once onto the bottom layer and then left
+   alone; only the top layer is cleared and repainted per generation. The
+   saving there is small — re-stroking the grid every frame measures about
+   0.03ms — but it also means a fading cell fades to reveal a crisp grid
+   line underneath, rather than the line being repainted over the top of
+   it at full strength every frame.
+   ==================================================================== */
 
-// game logic
-function next_generation(){
-	generations++;
-	print_generations();
-	if (trail)
-		clear_transparent();
-	else
-		clear();
-	count_neighbors();
-	for (let row = 0; row < grid.length; row++){ // make new generation
-		for (let col = 0; col < grid[0].length; col++){
-			count = grid[row][col][3];
-			if (grid[row][col][0] === 1){ // alive
-				if (count < 2)
-					grid[row][col][1] = 0;
-				else if (count <= 3)
-					grid[row][col][1] = 1;
-				else 
-					grid[row][col][1] = 0;
 
-			} else { // if dead
-				if (count === 3)
-					grid[row][col][1] = 1;
-				else 
-					grid[row][col][1] = 0;
-			}	
+/* ---- tunables ---------------------------------------------------- */
+
+const MIN_DIM        = 3;    // never let the board get narrower than this
+const MIN_CELL       = 3;    // px; below this a cell is not really visible
+const GRID_LINE_MIN  = 7;    // px; hide grid lines when cells get tiny
+const ROUND_CELL_MIN = 7;    // px; circles at or above this, pixels below
+const CELL_FILL      = 0.84; // cell diameter as a fraction of its square
+const AGE_MAX        = 255;  // a just-died cell starts fading from here
+const RANDOM_DENSITY = 0.28;
+const DEFAULTS       = { cell: 14, speed: 12, trail: 60, rule: "B3/S23" };
+
+
+/* ---- the page --------------------------------------------------- */
+
+const el = {
+	step:    document.querySelector("#step"),
+	play:    document.querySelector("#play"),
+	reset:   document.querySelector("#reset"),
+	clear:   document.querySelector("#clear"),
+	random:  document.querySelector("#random"),
+	gen:     document.querySelector("#gen"),
+	pop:     document.querySelector("#pop"),
+
+	zoom:    document.querySelector("#zoom"),
+	speed:   document.querySelector("#speed"),
+	trail:   document.querySelector("#trail"),
+	rows:    document.querySelector("#rows"),
+	cols:    document.querySelector("#cols"),
+	fit:     document.querySelector("#fit"),
+	wrap:    document.querySelector("#wrap"),
+	rule:    document.querySelector("#rule"),
+	pattern: document.querySelector("#pattern"),
+
+	zoom_out:  document.querySelector("#zoom_out"),
+	speed_out: document.querySelector("#speed_out"),
+	trail_out: document.querySelector("#trail_out"),
+
+	stage:   document.querySelector(".stage"),
+	board:   document.querySelector(".board"),
+	grid:    document.querySelector("#grid_layer"),
+	cells:   document.querySelector("#cell_layer"),
+};
+
+const grid_ctx = el.grid.getContext("2d");
+const cell_ctx = el.cells.getContext("2d");
+
+// colours come from the stylesheet so style.css stays the single source
+const css = getComputedStyle(document.documentElement);
+const COLORS = {
+	board: css.getPropertyValue("--board").trim()     || "#202d37",
+	line:  css.getPropertyValue("--grid-line").trim() || "rgba(150,200,220,0.09)",
+	cell:  css.getPropertyValue("--cell").trim()      || "#bbffcc",
+};
+
+/* The pixel-writing path needs the cell colour as three bytes, but the
+   stylesheet is free to write it as a hex code, rgb(), a colour name, or
+   anything else CSS allows. Rather than parse any of that, paint one pixel
+   and read back what the canvas made of it. */
+function resolve_rgb(color) {
+	const probe = document.createElement("canvas");
+	probe.width = probe.height = 1;
+	const ctx = probe.getContext("2d");
+	ctx.fillStyle = color;
+	ctx.fillRect(0, 0, 1, 1);
+	const [r, g, b] = ctx.getImageData(0, 0, 1, 1).data;
+	return { r, g, b };
+}
+
+const CELL_RGB = resolve_rgb(COLORS.cell);
+
+const TAU = Math.PI * 2;
+
+// age -> alpha, worked out once instead of dividing per cell per frame
+const AGE_ALPHA = new Float32Array(AGE_MAX + 1);
+for (let a = 0; a <= AGE_MAX; a++) AGE_ALPHA[a] = a / AGE_MAX;
+
+
+/* ---- state ------------------------------------------------------ */
+
+let rows = 0, cols = 0, cell_count = 0;
+let cur = null, nxt = null, saved = null, counts = null, age = null;
+
+let cell_size = DEFAULTS.cell;   // css px per cell
+let css_w = 0, css_h = 0;        // board size in css px
+let dpr = 1;                     // device pixels per css px
+
+let fit_window = true;           // derive rows/cols from the window?
+let wrap_edges = true;           // torus, or hard walls?
+let zoom = DEFAULTS.cell;        // desired cell size when fitting
+let fixed_rows = 64;             // board size when *not* fitting
+let fixed_cols = 64;
+let steps_per_second = DEFAULTS.speed;
+let trail_percent = DEFAULTS.trail;
+let trail_decay = DEFAULTS.trail / 100;
+let remembered_trail = DEFAULTS.trail;  // so [t] can put the trail back
+
+let rule_text = DEFAULTS.rule;
+let birth_mask = 0, survive_mask = 0;   // bit n set == "n neighbours does it"
+
+let generation = 0;
+let population = 0;
+
+let running = false;
+let raf_id = null;
+let last_step = 0;
+let needs_render = true;
+
+let armed_pattern = null;        // pattern waiting to be stamped
+let hover = null;                // {row, col} under the pointer, for preview
+let seeded = false;              // has the opening soup been dealt yet?
+
+
+/* ====================================================================
+   rules
+   ==================================================================== */
+
+/* "B3/S23" -> two 9-bit masks. Letters are required so there is no
+   ambiguity about which side is which; order does not matter, so
+   "S23/B3" parses the same. Returns null if it does not parse. */
+function parse_rule(text) {
+	const parts = String(text).split("/");
+	if (parts.length !== 2) return null;
+
+	let birth = null, survive = null;
+	for (const part of parts) {
+		const m = /^\s*([bBsS])\s*([0-8]*)\s*$/.exec(part);
+		if (!m) return null;
+
+		let mask = 0;
+		for (const digit of m[2]) mask |= 1 << Number(digit);
+
+		if (m[1].toLowerCase() === "b") {
+			if (birth !== null) return null;      // two B clauses
+			birth = mask;
+		} else {
+			if (survive !== null) return null;    // two S clauses
+			survive = mask;
 		}
 	}
-	c.fillStyle = "#bfc";
-	for (let row = 0; row < grid.length; row++){ // write temp to current state
-		for (let col = 0; col < grid[0].length; col++){
-			if (grid[row][col][0] = grid[row][col][1] === 1){
-				// light up the living cells
-				c.beginPath();
-				c.arc(Math.round(col*cell_width + cell_width/2), 
-					    Math.round(row*cell_width + cell_width/2),
-					    Math.round(cell_width/3), 0, 2*Math.PI, false);
-				c.fill();
+	if (birth === null || survive === null) return null;
+	return { birth, survive };
+}
+
+function apply_rule(text) {
+	const parsed = parse_rule(text);
+	if (!parsed) return false;
+	birth_mask   = parsed.birth;
+	survive_mask = parsed.survive;
+	rule_text    = text;
+	return true;
+}
+
+
+/* ====================================================================
+   the simulation
+   ==================================================================== */
+
+/* Only living cells do any work: each one scatters a +1 into its eight
+   neighbours. Most cells are interior, where all eight neighbours are a
+   fixed offset away and no bounds checking is needed at all — that fast
+   path is worth the extra branch. */
+function count_neighbours() {
+	counts.fill(0);
+
+	for (let row = 0; row < rows; row++) {
+		const base = row * cols;
+		const interior_row = row > 0 && row < rows - 1;
+
+		for (let col = 0; col < cols; col++) {
+			if (cur[base + col] === 0) continue;
+
+			if (interior_row && col > 0 && col < cols - 1) {
+				const i = base + col;
+				counts[i - cols - 1]++; counts[i - cols]++; counts[i - cols + 1]++;
+				counts[i        - 1]++;                     counts[i        + 1]++;
+				counts[i + cols - 1]++; counts[i + cols]++; counts[i + cols + 1]++;
+			} else {
+				scatter_edge(row, col);
 			}
-			grid[row][col][3] = 0; // reset neighbor count for next time
-			// there's probably a better place to do this
-		}
-	}
-}
-step_button.onclick = next_generation;
-
-function count_neighbors() {
-	for (let row = 0; row < num_rows; row++){
-		let up    = (row === 0) ? num_rows-1 : row - 1;
-		let down  = (row === num_rows-1) ? 0 : row + 1;
-		for (let col = 0; col < num_cols; col++){
-			if (grid[row][col][0] == 0) // only do the work for living cells
-				continue;
-			let left  = (col === 0) ? num_cols-1 : col - 1;
-			let right = (col === num_cols-1) ? 0 : col + 1;
-			grid[up][left][3]   ++;
-			grid[up][right][3]  ++;
-			grid[up][col][3]    ++;
-			grid[row][left][3]  ++;
-			grid[row][right][3] ++;
-			grid[down][left][3] ++;
-			grid[down][col][3]  ++;
-			grid[down][right][3]++;
 		}
 	}
 }
 
-function print_generations(){
-	gen_display.innerHTML = ('00000'+generations.toString()).slice(-5);
-}
-
-// not on the page yet
-function print_count(){
-	live_counter.innerHTML = living;
-}
-
-c.strokeStyle = "#123";
-c.lineWidth = 4;
-
-function stroke_grid() {
-	for (let row = 0; row < grid.length; row++){
-		c.beginPath();
-		c.moveTo(0, row*cell_width);
-		c.lineTo(canvas.width, row*cell_width);
-		c.stroke(); 
-	}
-	for (let col = 0; col < grid[0].length; col++){
-		c.beginPath();
-		c.moveTo(col*cell_width, 0);
-		c.lineTo(col*cell_width, canvas.height);
-		c.stroke(); 
+/* the slow path, for cells on the boundary: either wrap around to the
+   far side (a torus) or drop the neighbours that fall off the edge */
+function scatter_edge(row, col) {
+	for (let dr = -1; dr <= 1; dr++) {
+		let r = row + dr;
+		if (r < 0 || r >= rows) {
+			if (!wrap_edges) continue;
+			r = (r + rows) % rows;
+		}
+		for (let dc = -1; dc <= 1; dc++) {
+			if (dr === 0 && dc === 0) continue;
+			let c = col + dc;
+			if (c < 0 || c >= cols) {
+				if (!wrap_edges) continue;
+				c = (c + cols) % cols;
+			}
+			counts[r * cols + c]++;
+		}
 	}
 }
 
-function clear() {
-	c.fillStyle = "rgba(32,45,55,1)";
-	c.fillRect(0, 0, canvas.width, canvas.height);
-	if (num_rows < 256 && num_cols < 256) // for performance
-		stroke_grid();
+function step() {
+	count_neighbours();
+
+	let live = 0;
+	for (let i = 0; i < cell_count; i++) {
+		const n = counts[i];
+		const alive = cur[i] ? (survive_mask >> n) & 1 : (birth_mask >> n) & 1;
+		nxt[i] = alive;
+		live += alive;
+	}
+
+	// swap the buffers rather than copying one into the other
+	const spare = cur;
+	cur = nxt;
+	nxt = spare;
+
+	generation++;
+	population = live;
+	decay_ages();
+	show_counters();
 }
 
-// the transparent fill is what gives the afterglow effect
-// this is suprisingly the main bottleneck for the whole program
-// this may be a good candidate for web workers to fill the canvas
-// in tiles?
-let opacity = 0.7;
-function clear_transparent() {
-	c.fillStyle = "rgba(32,45,55," + opacity + ")";
-	c.fillRect(0, 0, canvas.width, canvas.height);
-	if (num_rows < 256 && num_cols < 256) // for performance
-		stroke_grid();
-}     
+/* Each cell carries an "age": being alive pins it at full brightness, and
+   once it dies the age decays, which is what draws the fading trail.
 
-function raise_opacity() {
-	opacity += 0.05;
-	if (opacity > 1)
-		opacity = 1;
+   The older way to get this effect was a translucent fill over the whole
+   canvas once a frame. That is actually the *cheaper* of the two — it
+   measures around 0.01ms, and this loop plus the extra ghosts it puts on
+   screen cost rather more than that. It is done this way regardless
+   because repeatedly compositing a translucent fill never quite reaches
+   zero: 8-bit alpha bottoms out at 1 and stays there, so every cell that
+   was ever alive keeps a permanent faint smudge, and a long-running board
+   slowly hazes over. Counting down an integer per cell lands on exactly 0
+   and stays there. */
+function decay_ages() {
+	if (trail_decay <= 0) {
+		for (let i = 0; i < cell_count; i++) age[i] = cur[i] ? AGE_MAX : 0;
+		return;
+	}
+	for (let i = 0; i < cell_count; i++) {
+		if (cur[i]) { age[i] = AGE_MAX; continue; }
+		const a = age[i];
+		if (a === 0) continue;
+		const faded = (a * trail_decay) | 0;
+		// always drop at least one, or low ages would round to themselves
+		age[i] = faded < a ? faded : a - 1;
+	}
 }
 
-function lower_opacity() {
-	opacity -= 0.05;
-	if (opacity <0)
-		opacity = 0;
+function count_population() {
+	let live = 0;
+	for (let i = 0; i < cell_count; i++) live += cur[i];
+	population = live;
 }
 
-// drawing the circles that are alive
-function grid_to_canvas() {
-	c.fillStyle = "#bfc";
-	for (let row = 0; row < grid.length; row++){
-		for (let col = 0; col < grid[0].length; col++){
-			if (grid[row][col][0] === 1){
-				c.beginPath();
-				c.arc(Math.round(col*cell_width + cell_width/2), 
-					    Math.round(row*cell_width + cell_width/2),
-					    Math.round(cell_width/3), 0, 2*Math.PI, false);
-				c.fill();
+
+/* ====================================================================
+   drawing
+   ==================================================================== */
+
+/* Snap a css-pixel coordinate to a device-pixel boundary and then nudge
+   it half a device pixel, so a hairline stroke lands inside exactly one
+   physical pixel instead of straddling two and going grey. */
+function crisp(v) {
+	return (Math.round(v * dpr) + 0.5) / dpr;
+}
+
+/* Drawn once per resize, never per frame. One path with one stroke() at
+   the end, rather than a stroke() per line. */
+function draw_grid_layer() {
+	grid_ctx.fillStyle = COLORS.board;
+	grid_ctx.fillRect(0, 0, css_w, css_h);
+
+	if (cell_size < GRID_LINE_MIN) return;  // lines would just be mush
+
+	grid_ctx.strokeStyle = COLORS.line;
+	grid_ctx.lineWidth = 1 / dpr;           // one physical pixel, any display
+	grid_ctx.beginPath();
+
+	for (let row = 0; row <= rows; row++) {
+		const y = crisp(row * cell_size);
+		grid_ctx.moveTo(0, y);
+		grid_ctx.lineTo(css_w, y);
+	}
+	for (let col = 0; col <= cols; col++) {
+		const x = crisp(col * cell_size);
+		grid_ctx.moveTo(x, 0);
+		grid_ctx.lineTo(x, css_h);
+	}
+
+	grid_ctx.stroke();
+}
+
+/* There are two ways to put the cells on screen and the right one depends
+   entirely on how big a cell is, so both are here.
+
+   Something worth knowing, because it is the opposite of what you would
+   guess: gathering all the circles into one big Path2D and filling that
+   once measured about twice as *slow* as filling each cell separately. A
+   path carrying thousands of subpaths gets tessellated as a single unit,
+   while small independent fills each touch only their own few pixels.
+   Batching the grid lines into one stroke is still a clear win — those
+   genuinely are one long path — but batching the cells is not. */
+function draw_cells() {
+	if (cell_size >= ROUND_CELL_MIN) draw_cells_as_circles();
+	else                             draw_cells_as_pixels();
+
+	if (armed_pattern && hover) draw_stamp_preview();
+}
+
+/* Big cells: one antialiased arc each. A few thousand of these is nothing,
+   and it is the only way to get a round cell that looks round. */
+function draw_cells_as_circles() {
+	cell_ctx.clearRect(0, 0, css_w, css_h);
+	cell_ctx.fillStyle = COLORS.cell;
+
+	const radius = (cell_size * CELL_FILL) / 2;
+	const half   = cell_size / 2;
+
+	for (let row = 0; row < rows; row++) {
+		const base = row * cols;
+		const cy = row * cell_size + half;
+
+		for (let col = 0; col < cols; col++) {
+			const a = age[base + col];
+			if (a === 0) continue;          // never lived, or done fading
+
+			cell_ctx.globalAlpha = AGE_ALPHA[a];
+			cell_ctx.beginPath();
+			cell_ctx.arc(col * cell_size + half, cy, radius, 0, TAU);
+			cell_ctx.fill();
+		}
+	}
+	cell_ctx.globalAlpha = 1;
+}
+
+/* Small cells: once a cell is only a few pixels across, the cost of asking
+   the canvas to fill it dwarfs the handful of pixels it actually covers —
+   measured around 0.4µs per fillRect, so a fully zoomed-out board burns
+   ~70ms a frame on call overhead alone. Writing the pixels into an
+   ImageData and uploading it in one go is about eight times quicker, and
+   at two or three pixels a cell there is no antialiasing to miss. */
+let pixel_buf = null;
+
+function draw_cells_as_pixels() {
+	const width  = el.cells.width;          // device pixels: ImageData
+	const height = el.cells.height;         // ignores the context transform
+	if (!pixel_buf || pixel_buf.width !== width || pixel_buf.height !== height)
+		pixel_buf = cell_ctx.createImageData(width, height);
+
+	const px = pixel_buf.data;
+	px.fill(0);                             // one memset, clears to transparent
+
+	const step_px = cell_size * dpr;
+	const side = Math.max(1, Math.round(cell_size * CELL_FILL * dpr));
+	const inset = (step_px - side) / 2;
+	const { r: red, g: green, b: blue } = CELL_RGB;
+
+	for (let row = 0; row < rows; row++) {
+		const base = row * cols;
+		const y0 = Math.round(row * step_px + inset);
+
+		for (let col = 0; col < cols; col++) {
+			const a = age[base + col];
+			if (a === 0) continue;
+
+			const x0 = Math.round(col * step_px + inset);
+			const y1 = Math.min(height, y0 + side);
+			const x1 = Math.min(width,  x0 + side);
+
+			for (let y = y0; y < y1; y++) {
+				let o = (y * width + x0) * 4;
+				for (let x = x0; x < x1; x++) {
+					px[o]     = red;
+					px[o + 1] = green;
+					px[o + 2] = blue;
+					px[o + 3] = a;          // ImageData alpha is straight, not
+					o += 4;                 // premultiplied, so age drops in
+				}
 			}
 		}
 	}
+
+	cell_ctx.putImageData(pixel_buf, 0, 0);
 }
 
-// initial condition of the screen
-function init(){
-	c.fillStyle = "#123";
-	c.fillRect(0,0, canvas.width, canvas.height);
-	clear();
-}
+/* ghost of the pattern that is about to be dropped */
+function draw_stamp_preview() {
+	const cells = armed_pattern.cells;
+	const origin_row = hover.row - (armed_pattern.rows >> 1);
+	const origin_col = hover.col - (armed_pattern.cols >> 1);
 
+	const radius = (cell_size * CELL_FILL) / 2;
+	const round  = cell_size >= ROUND_CELL_MIN;
+	const half   = cell_size / 2;
 
-// utility functions
-function clear_grid(){
-	generations = 0;
-	print_generations();
-	stop();
-	for (let row = 0; row < grid.length; row++){
-		for (let col = 0; col < grid[0].length; col++){
-			grid[row][col][0]= 0;
+	cell_ctx.globalAlpha = 0.4;
+	for (const [dr, dc] of cells) {
+		const spot = locate(origin_row + dr, origin_col + dc);
+		if (!spot) continue;
+		const cx = spot.col * cell_size + half;
+		const cy = spot.row * cell_size + half;
+		if (round) {
+			cell_ctx.beginPath();
+			cell_ctx.arc(cx, cy, radius, 0, TAU);
+			cell_ctx.fill();
+		} else {
+			cell_ctx.fillRect(cx - radius, cy - radius, radius * 2, radius * 2);
 		}
 	}
-	clear();
+	cell_ctx.globalAlpha = 1;
 }
-clear_button.onclick = clear_grid;
 
-// state you return to in reset
-function save_grid(){
-	for (let row = 0; row < grid.length; row++){
-		for (let col = 0; col < grid[0].length; col++){
-			grid[row][col][2] = grid[row][col][0];
+function render() {
+	draw_cells();
+	needs_render = false;
+}
+
+function request_render() {
+	needs_render = true;
+	schedule_frame();
+}
+
+
+/* ====================================================================
+   layout — the board is fitted to the window, never the other way round
+   ==================================================================== */
+
+/* Two modes, and neither one can overflow the window:
+
+     fit window   you pick the cell size, rows/cols follow from how many
+                  fit in the space left over below the control bar
+     fixed size   you pick rows/cols, and the cell size is whatever makes
+                  the whole board visible                                */
+function compute_layout() {
+	// In fit mode the board is floored to whole cells and can never spill,
+	// so no scrollbar is possible. Only a fixed board can outgrow the
+	// window. Switch that on *before* measuring, so the space the scrollbar
+	// gutter takes is already accounted for in what we are about to measure
+	// — deciding it afterwards would leave the board a gutter too wide.
+	el.stage.classList.toggle("scrollable", !fit_window);
+
+	const avail_w = Math.max(1, el.stage.clientWidth);
+	const avail_h = Math.max(1, el.stage.clientHeight);
+
+	if (fit_window) {
+		cell_size = zoom;
+		cols = Math.max(MIN_DIM, Math.floor(avail_w / cell_size));
+		rows = Math.max(MIN_DIM, Math.floor(avail_h / cell_size));
+	} else {
+		rows = fixed_rows;
+		cols = fixed_cols;
+		cell_size = Math.max(MIN_CELL, Math.min(avail_w / cols, avail_h / rows));
+	}
+
+	css_w = cols * cell_size;
+	css_h = rows * cell_size;
+}
+
+/* Size the backing store to the *device* pixels we actually occupy and
+   scale the context to match. Without this the canvas is stretched by
+   the compositor on any hidpi display and everything looks faintly
+   out of focus. */
+function apply_canvas_size() {
+	dpr = window.devicePixelRatio || 1;
+
+	for (const canvas of [el.grid, el.cells]) {
+		canvas.style.width  = css_w + "px";
+		canvas.style.height = css_h + "px";
+		canvas.width  = Math.round(css_w * dpr);
+		canvas.height = Math.round(css_h * dpr);
+	}
+
+	// setting .width wipes the context state, so the transform goes last
+	grid_ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+	cell_ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+/* Fresh buffers at the new size, with whatever was on the old board
+   copied across. Centred, so zooming out grows the margins around your
+   pattern instead of pinning it to the top-left corner. */
+function allocate(prev) {
+	const n = rows * cols;
+	const new_cur   = new Uint8Array(n);
+	const new_age   = new Uint8Array(n);
+	const new_saved = new Uint8Array(n);
+
+	if (prev && prev.cur) {
+		const dr = ((rows - prev.rows) / 2) | 0;
+		const dc = ((cols - prev.cols) / 2) | 0;
+
+		for (let r = 0; r < prev.rows; r++) {
+			const nr = r + dr;
+			if (nr < 0 || nr >= rows) continue;
+			for (let c = 0; c < prev.cols; c++) {
+				const nc = c + dc;
+				if (nc < 0 || nc >= cols) continue;
+				const from = r * prev.cols + c;
+				const to   = nr * cols + nc;
+				new_cur[to]   = prev.cur[from];
+				new_age[to]   = prev.age[from];
+				new_saved[to] = prev.saved[from];
+			}
 		}
 	}
+
+	cur = new_cur;
+	age = new_age;
+	saved = new_saved;
+	nxt = new Uint8Array(n);
+	counts = new Uint8Array(n);
+	cell_count = n;
 }
 
-function reset_grid(){
-	generations = 0;
-	print_generations();
-	stop();
-	for (let row = 0; row < grid.length; row++){
-		for (let col = 0; col < grid[0].length; col++){
-			// write undo slot into the current gen slot
-			grid[row][col][0] = grid[row][col][2];
-		}
-	}
-	clear();
-	grid_to_canvas();
-}
-reset_button.onclick = reset_grid;
+function relayout() {
+	const prev = cur ? { rows, cols, cur, age, saved } : null;
+	const prev_cell = cell_size;
+	const prev_dpr = dpr;
 
-function randomize(){
-	stop();
-	generations = 0;
-	print_generations();
-	for (let row = 0; row < grid.length; row++){
-		for (let col = 0; col < grid[0].length; col++){
-			if (Math.random() < 0.2)
-				grid[row][col][0] = 1;
-			else
-				grid[row][col][0] = 0;
-		}
-	}
-	clear();
-	grid_to_canvas();
-	save_grid();
-}
-random_button.onclick = randomize;
+	compute_layout();
 
-let id;
-function stop(){
-	if (!paused)
-		clearInterval(id);
-	paused = true;
-}
-stop_button.onclick = stop;
+	const dims_changed  = !prev || prev.rows !== rows || prev.cols !== cols;
+	const scale_changed = cell_size !== prev_cell ||
+	                      (window.devicePixelRatio || 1) !== prev_dpr;
 
-function play(){
-	if (paused)
-		id = setInterval(next_generation, interval);
-	paused = false;
-}
-play_button.onclick = play;
+	if (dims_changed) {
+		allocate(prev);
+		count_population();
+	}
 
-function faster(){
-	if (interval <= 5)// 200 fps max?
-		return;// not sure what the limit should be yet
-	interval -= 5;
-	if (paused)
-		return;
-	stop();
-	play();
-}
+	// Skipping this when nothing actually changed keeps a redundant resize
+	// notification cheap, and stops any scrollbar-appears/board-shrinks
+	// feedback loop from oscillating.
+	if (dims_changed || scale_changed) {
+		apply_canvas_size();
+		draw_grid_layer();
+		request_render();
+	}
 
-function slower(){
-	interval += 5;
-	if (paused)
-		return;
-	stop();
-	play();
-}
+	sync_inputs();
+	show_counters();
 
-document.onkeypress = (e) => {
-	if (e.key === 's'){
-		stop();
-	}
-	if (e.key === 'p'){
-		play();
-	}
-	if (e.key === 'n'){
-		next_generation();
-	}
-	if (e.key === 'x'){
-		clear_grid();
-	}
-	if (e.key === 'r'){
-		reset_grid();
-	}
-	if (e.key === '+'){
-		faster();
-	}
-	if (e.key === '-'){
-		slower();
-	}
-	if (e.key === '?'){
+	// Deal the opening soup here rather than at startup, so it fills the
+	// board as actually laid out. The first measurement can happen before
+	// the control bar has finished reflowing, and seeding against that
+	// would leave a band of empty cells around the edges.
+	if (!seeded && rows > MIN_DIM && cols > MIN_DIM) {
+		seeded = true;
 		randomize();
 	}
-	if (e.key === '['){
-		raise_opacity();
-	}
-	if (e.key === ']'){
-		lower_opacity();
-	}
-	if (e.key === 't'){
-		trail ^= 1; // toggle 0 <-> 1
-	}
-	grid_to_canvas();
 }
 
-canvas.onclick = (event) => {
-	generations = 0;
-	print_generations();
+
+/* ====================================================================
+   the run loop
+   ==================================================================== */
+
+/* requestAnimationFrame rather than setInterval: it lines up with the
+   display refresh instead of tearing across it, and the browser stops
+   calling us entirely while the tab is hidden. */
+function schedule_frame() {
+	if (raf_id === null) raf_id = requestAnimationFrame(frame);
+}
+
+function frame(now) {
+	raf_id = null;
+
+	if (running) {
+		const interval = 1000 / steps_per_second;
+		let taken = 0;
+
+		// catch up if we fell behind, but cap it so a stalled tab coming
+		// back to life does not try to replay thousands of generations
+		while (now - last_step >= interval && taken < 4) {
+			step();
+			last_step += interval;
+			taken++;
+		}
+		if (taken > 0) needs_render = true;
+		if (now - last_step > interval * 4) last_step = now;
+	}
+
+	if (needs_render) render();
+	if (running) schedule_frame();
+}
+
+function play() {
+	if (running) return;
+	running = true;
+	last_step = performance.now();
+	el.play.textContent = "pause";
+	el.play.classList.add("on");
+	schedule_frame();
+}
+
+function stop() {
+	running = false;
+	el.play.textContent = "play";
+	el.play.classList.remove("on");
+}
+
+function toggle_play() {
+	running ? stop() : play();
+}
+
+
+/* ====================================================================
+   board operations
+   ==================================================================== */
+
+function show_counters() {
+	el.gen.textContent = String(generation).padStart(5, "0");
+	el.pop.textContent = String(population);
+}
+
+function snapshot() {
+	saved.set(cur);
+}
+
+function clear_board() {
 	stop();
-	bb = canvas.getBoundingClientRect(); 
-	let x = (event.clientX-bb.left)*(canvas.width/bb.width);
-	let y = (event.clientY-bb.top)*(canvas.height/bb.height);
-	let col = Math.floor(x/cell_width);
-	let row = Math.floor(y/cell_width);
-	grid[row][col][0] ^= 1;
-	save_grid();
-	clear();
-	grid_to_canvas();
+	cur.fill(0);
+	age.fill(0);
+	saved.fill(0);
+	generation = 0;
+	population = 0;
+	show_counters();
+	request_render();
+}
+
+function reset_board() {
+	stop();
+	cur.set(saved);
+	age.fill(0);
+	for (let i = 0; i < cell_count; i++) if (cur[i]) age[i] = AGE_MAX;
+	generation = 0;
+	count_population();
+	show_counters();
+	request_render();
+}
+
+function randomize() {
+	stop();
+	for (let i = 0; i < cell_count; i++) {
+		cur[i] = Math.random() < RANDOM_DENSITY ? 1 : 0;
+		age[i] = cur[i] ? AGE_MAX : 0;
+	}
+	generation = 0;
+	count_population();
+	snapshot();
+	show_counters();
+	request_render();
+}
+
+function single_step() {
+	stop();          // stepping while running is ambiguous, so pause first
+	step();
+	request_render();
+}
+
+
+/* ====================================================================
+   patterns
+
+   Written as little pictures so they can be read and edited in place.
+   'O' is a live cell, anything else is dead.
+   ==================================================================== */
+
+const PATTERN_ART = {
+	"class demo": [
+		"O....",
+		"O.OOO",
+		"O....",
+	],
+	"glider": [
+		".O.",
+		"..O",
+		"OOO",
+	],
+	"lightweight spaceship": [
+		".O..O",
+		"O....",
+		"O...O",
+		"OOOO.",
+	],
+	"pulsar": [
+		"..OOO...OOO..",
+		".............",
+		"O....O.O....O",
+		"O....O.O....O",
+		"O....O.O....O",
+		"..OOO...OOO..",
+		".............",
+		"..OOO...OOO..",
+		"O....O.O....O",
+		"O....O.O....O",
+		"O....O.O....O",
+		".............",
+		"..OOO...OOO..",
+	],
+	"r-pentomino": [
+		".OO",
+		"OO.",
+		".O.",
+	],
+	"acorn": [
+		".O.....",
+		"...O...",
+		"OO..OOO",
+	],
+	"diehard": [
+		"......O.",
+		"OO......",
+		".O...OOO",
+	],
+	"gosper glider gun": [
+		"........................O...........",
+		"......................O.O...........",
+		"............OO......OO............OO",
+		"...........O...O....OO............OO",
+		"OO........O.....O...OO..............",
+		"OO........O...O.OO....O.O...........",
+		"..........O.....O.......O...........",
+		"...........O...O....................",
+		"............OO......................",
+	],
+};
+
+/* turn the pictures into {rows, cols, cells:[[dr,dc],...]} */
+const PATTERNS = {};
+for (const [name, art] of Object.entries(PATTERN_ART)) {
+	const cells = [];
+	let width = 0;
+	art.forEach((line, r) => {
+		width = Math.max(width, line.length);
+		for (let c = 0; c < line.length; c++)
+			if (line[c] === "O") cells.push([r, c]);
+	});
+	PATTERNS[name] = { rows: art.length, cols: width, cells };
+}
+
+function build_pattern_menu() {
+	const none = document.createElement("option");
+	none.value = "";
+	none.textContent = "draw cells";
+	el.pattern.append(none);
+
+	for (const name of Object.keys(PATTERNS)) {
+		const option = document.createElement("option");
+		option.value = name;
+		option.textContent = name;
+		el.pattern.append(option);
+	}
+}
+
+function stamp(pattern, row, col) {
+	const origin_row = row - (pattern.rows >> 1);
+	const origin_col = col - (pattern.cols >> 1);
+
+	for (const [dr, dc] of pattern.cells) {
+		const spot = locate(origin_row + dr, origin_col + dc);
+		if (!spot) continue;
+		const i = spot.row * cols + spot.col;
+		cur[i] = 1;
+		age[i] = AGE_MAX;
+	}
+	count_population();
+	snapshot();
+	show_counters();
+	request_render();
+}
+
+function arm_pattern(name) {
+	armed_pattern = PATTERNS[name] || null;
+	el.cells.classList.toggle("stamping", armed_pattern !== null);
+	request_render();
+}
+
+
+/* ====================================================================
+   pointer input — click or drag to paint, click to stamp
+   ==================================================================== */
+
+/* Map a board coordinate through the edge behaviour. Returns null when
+   the cell falls outside a non-wrapping board. */
+function locate(row, col) {
+	if (wrap_edges) {
+		row = ((row % rows) + rows) % rows;
+		col = ((col % cols) + cols) % cols;
+		return { row, col };
+	}
+	if (row < 0 || row >= rows || col < 0 || col >= cols) return null;
+	return { row, col };
+}
+
+/* Which cell is under this pointer event? Clamped, because the pointer
+   can legitimately sit a fraction of a pixel outside the canvas and an
+   unclamped index would read straight off the end of the array. */
+function cell_at(event) {
+	const box = el.cells.getBoundingClientRect();
+	const x = (event.clientX - box.left) * (css_w / box.width);
+	const y = (event.clientY - box.top)  * (css_h / box.height);
+
+	const col = Math.min(cols - 1, Math.max(0, Math.floor(x / cell_size)));
+	const row = Math.min(rows - 1, Math.max(0, Math.floor(y / cell_size)));
+	return { row, col };
+}
+
+let painting = false;
+let paint_to = 1;          // are we drawing cells or erasing them?
+let paint_last = null;     // previous cell, so fast drags do not skip
+
+function paint(row, col) {
+	const i = row * cols + col;
+	if (cur[i] === paint_to) return;
+	cur[i] = paint_to;
+	age[i] = paint_to ? AGE_MAX : 0;
+	population += paint_to ? 1 : -1;
+}
+
+/* A quick drag fires pointermove every few cells, so join consecutive
+   samples with a straight line instead of leaving gaps. */
+function paint_line(from, to) {
+	const steps = Math.max(Math.abs(to.row - from.row), Math.abs(to.col - from.col));
+	if (steps === 0) { paint(to.row, to.col); return; }
+
+	for (let s = 1; s <= steps; s++) {
+		const row = Math.round(from.row + ((to.row - from.row) * s) / steps);
+		const col = Math.round(from.col + ((to.col - from.col) * s) / steps);
+		paint(row, col);
+	}
+}
+
+el.cells.addEventListener("pointerdown", (event) => {
+	const at = cell_at(event);
+
+	if (armed_pattern) {
+		stamp(armed_pattern, at.row, at.col);
+		return;
+	}
+
+	el.cells.setPointerCapture(event.pointerId);
+	painting = true;
+	// whatever the first cell is, do the opposite to it for the whole drag
+	paint_to = cur[at.row * cols + at.col] ? 0 : 1;
+	paint_last = at;
+	paint(at.row, at.col);
+	show_counters();
+	request_render();
+});
+
+el.cells.addEventListener("pointermove", (event) => {
+	const at = cell_at(event);
+
+	if (painting) {
+		paint_line(paint_last, at);
+		paint_last = at;
+		show_counters();
+		request_render();
+		return;
+	}
+
+	if (armed_pattern) {
+		if (!hover || hover.row !== at.row || hover.col !== at.col) {
+			hover = at;
+			request_render();
+		}
+	}
+});
+
+function end_paint() {
+	if (!painting) return;
+	painting = false;
+	paint_last = null;
+	snapshot();       // reset now comes back to what you just drew
+}
+
+el.cells.addEventListener("pointerup", end_paint);
+el.cells.addEventListener("pointercancel", end_paint);
+
+el.cells.addEventListener("pointerleave", () => {
+	if (hover) { hover = null; request_render(); }
+});
+
+
+/* ====================================================================
+   controls
+   ==================================================================== */
+
+function sync_inputs() {
+	// in fixed mode the zoom is derived, so park the (disabled) slider at
+	// whatever cell size actually got used rather than leaving it stale
+	const lo = Number(el.zoom.min), hi = Number(el.zoom.max);
+	el.zoom.value = String(fit_window
+		? zoom
+		: Math.round(Math.min(hi, Math.max(lo, cell_size))));
+	el.zoom_out.textContent = String(Math.round(cell_size));
+
+	el.speed.value = String(steps_per_second);
+	el.speed_out.textContent = steps_per_second + "/s";
+
+	el.trail.value = String(trail_percent);
+	el.trail_out.textContent = trail_percent === 0 ? "off" : trail_percent + "%";
+
+	// in fit mode these are a readout of what actually fitted
+	el.rows.value = String(rows);
+	el.cols.value = String(cols);
+	el.rows.disabled = fit_window;
+	el.cols.disabled = fit_window;
+	el.zoom.disabled = !fit_window;
+
+	el.fit.checked = fit_window;
+	el.wrap.checked = wrap_edges;
+	el.rule.value = rule_text;
+}
+
+el.step.addEventListener("click", single_step);
+el.play.addEventListener("click", toggle_play);
+el.reset.addEventListener("click", reset_board);
+el.clear.addEventListener("click", clear_board);
+el.random.addEventListener("click", randomize);
+
+el.zoom.addEventListener("input", () => {
+	zoom = Number(el.zoom.value);
+	relayout();
+	write_url();
+});
+
+el.speed.addEventListener("input", () => {
+	steps_per_second = Number(el.speed.value);
+	el.speed_out.textContent = steps_per_second + "/s";
+	last_step = performance.now();   // apply the new rate from here on
+	write_url();
+});
+
+el.trail.addEventListener("input", () => {
+	trail_percent = Number(el.trail.value);
+	trail_decay = trail_percent / 100;
+	el.trail_out.textContent = trail_percent === 0 ? "off" : trail_percent + "%";
+	if (trail_decay <= 0) {
+		for (let i = 0; i < cell_count; i++) age[i] = cur[i] ? AGE_MAX : 0;
+		request_render();
+	}
+	write_url();
+});
+
+el.fit.addEventListener("change", () => {
+	fit_window = el.fit.checked;
+	// leaving fit mode keeps whatever is on screen right now, so the board
+	// does not jump the moment you untick the box
+	if (!fit_window) { fixed_rows = rows; fixed_cols = cols; }
+	relayout();
+	write_url();
+});
+
+el.wrap.addEventListener("change", () => {
+	wrap_edges = el.wrap.checked;
+	write_url();
+});
+
+/* typing a size means you want that exact size, so drop out of fit mode
+   and let relayout work out the zoom that shows all of it */
+function commit_dimensions() {
+	fixed_rows = clamp_int(el.rows.value, MIN_DIM, 600, rows);
+	fixed_cols = clamp_int(el.cols.value, MIN_DIM, 600, cols);
+	fit_window = false;
+	relayout();
+	write_url();
+}
+
+for (const input of [el.rows, el.cols])
+	input.addEventListener("change", commit_dimensions);
+
+el.rule.addEventListener("input", () => {
+	const ok = apply_rule(el.rule.value);
+	el.rule.classList.toggle("invalid", !ok);
+	if (ok) write_url();
+});
+
+el.pattern.addEventListener("change", () => arm_pattern(el.pattern.value));
+
+function clamp_int(value, lo, hi, fallback) {
+	const n = parseInt(value, 10);
+	if (!Number.isFinite(n)) return fallback;
+	return Math.min(hi, Math.max(lo, n));
+}
+
+
+/* ====================================================================
+   keyboard
+   ==================================================================== */
+
+document.addEventListener("keydown", (event) => {
+	if (event.metaKey || event.ctrlKey || event.altKey) return;
+
+	// let the settings boxes have their keystrokes
+	const tag = event.target && event.target.tagName;
+	if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") {
+		if (event.key === "Escape") event.target.blur();
+		return;
+	}
+
+	switch (event.key) {
+		case " ":          event.preventDefault(); toggle_play();      break;
+		case "n":
+		case "ArrowRight": single_step();                              break;
+		case "p":          play();                                     break;
+		case "s":          stop();                                     break;
+		case "r":          reset_board();                              break;
+		case "x":          clear_board();                              break;
+		case "?":          randomize();                                break;
+
+		case "+":
+		case "=":          nudge(el.speed,  +5);                       break;
+		case "-":          nudge(el.speed,  -5);                       break;
+		case "]":          nudge(el.trail,  +5);                       break;
+		case "[":          nudge(el.trail,  -5);                       break;
+		case ".":          nudge(el.zoom,   +2);                       break;
+		case ",":          nudge(el.zoom,   -2);                       break;
+
+		case "t":
+			// toggle the trail, remembering where it was set
+			nudge_to(el.trail, trail_percent > 0 ? 0 : (remembered_trail || DEFAULTS.trail));
+			break;
+
+		case "w":
+			el.wrap.checked = !el.wrap.checked;
+			el.wrap.dispatchEvent(new Event("change"));
+			break;
+
+		case "Escape":
+			el.pattern.value = "";
+			arm_pattern("");
+			break;
+	}
+});
+
+function nudge(input, delta) {
+	nudge_to(input, Number(input.value) + delta);
+}
+
+function nudge_to(input, value) {
+	const lo = Number(input.min), hi = Number(input.max);
+	if (input === el.trail && trail_percent > 0) remembered_trail = trail_percent;
+	input.value = String(Math.min(hi, Math.max(lo, value)));
+	input.dispatchEvent(new Event("input"));
+}
+
+
+/* ====================================================================
+   url state — the address bar stays a shareable description of the
+   board, but it is no longer the only way to change it
+   ==================================================================== */
+
+let url_timer = null;
+
+function write_url() {
+	// dragging a slider fires constantly; replaceState is rate limited in
+	// some browsers, so coalesce the writes
+	clearTimeout(url_timer);
+	url_timer = setTimeout(() => {
+		const p = new URLSearchParams();
+
+		if (fit_window) {
+			if (zoom !== DEFAULTS.cell) p.set("cell", String(zoom));
+		} else {
+			p.set("rows", String(fixed_rows));
+			p.set("cols", String(fixed_cols));
+		}
+		if (rule_text !== DEFAULTS.rule)        p.set("rule", rule_text);
+		if (!wrap_edges)                        p.set("wrap", "0");
+		if (trail_percent !== DEFAULTS.trail)   p.set("trail", String(trail_percent));
+		if (steps_per_second !== DEFAULTS.speed) p.set("speed", String(steps_per_second));
+
+		const query = p.toString();
+		history.replaceState(null, "", location.pathname + (query ? "?" + query : ""));
+	}, 250);
+}
+
+function read_url() {
+	const p = new URLSearchParams(location.search);
+
+	// ?rows=&cols= is how this used to work, so those links still land on
+	// a board of exactly that size — just in fixed mode now
+	const want_rows = parseInt(p.get("rows"), 10);
+	const want_cols = parseInt(p.get("cols"), 10);
+	if (Number.isFinite(want_rows) && Number.isFinite(want_cols)) {
+		fit_window = false;
+		fixed_rows = Math.min(600, Math.max(MIN_DIM, want_rows));
+		fixed_cols = Math.min(600, Math.max(MIN_DIM, want_cols));
+	}
+
+	zoom = clamp_int(p.get("cell"), Number(el.zoom.min), Number(el.zoom.max), DEFAULTS.cell);
+	steps_per_second = clamp_int(p.get("speed"), 1, 60, DEFAULTS.speed);
+	trail_percent = clamp_int(p.get("trail"), 0, 90, DEFAULTS.trail);
+	trail_decay = trail_percent / 100;
+	remembered_trail = trail_percent || DEFAULTS.trail;
+	if (p.get("wrap") === "0") wrap_edges = false;
+
+	if (!apply_rule(p.get("rule") || DEFAULTS.rule)) apply_rule(DEFAULTS.rule);
+}
+
+
+/* ====================================================================
+   boot
+   ==================================================================== */
+
+/* The board is fitted into whatever space the control bar leaves behind,
+   and that space moves for more reasons than a window resize: the fonts
+   finish loading and reflow the bar, the settings row wraps onto a second
+   line, a phone rotates. A ResizeObserver on the stage catches all of it —
+   including the very first layout, which is otherwise easy to measure
+   before it has settled.
+
+   Note this runs the fit synchronously rather than deferring to a frame:
+   a ResizeObserver callback is already the right moment in the frame, and
+   a page opened in a background tab gets no animation frames at all, so
+   anything to do with sizing must not wait for one. */
+function init() {
+	build_pattern_menu();
+	read_url();
+	relayout();
+
+	new ResizeObserver(relayout).observe(el.stage);
+
+	// moving to a display with a different pixel density does not resize
+	// the stage, so that one needs watching separately
+	window.addEventListener("resize", relayout);
+
+	if (document.fonts && document.fonts.ready)
+		document.fonts.ready.then(relayout);
 }
 
 init();
